@@ -18,6 +18,9 @@ jobs:
     name: 'Terraform'
     runs-on: ubuntu-latest
     environment: production
+    permissions:
+      contents: read
+      pull-requests: write
 
     defaults:
       run:
@@ -70,13 +73,14 @@ jobs:
       continue-on-error: true
 
     - name: Update Pull Request
-      uses: actions/github-script@v6
       if: github.event_name == 'pull_request'
-      env:
-        PLAN: "terraform\n${{ steps.plan.outputs.stdout }}"
+      uses: actions/github-script@v6
       with:
         github-token: ${{ secrets.GITHUB_TOKEN }}
         script: |
+          const prNumber = context.issue.number;
+          const repo = context.repo;
+          
           const output = `#### Terraform Format and Style 🖌\`${{ steps.fmt.outcome }}\`
           #### Terraform Initialization ⚙️\`${{ steps.init.outcome }}\`
           #### Terraform Validation 🤖\`${{ steps.validate.outcome }}\`
@@ -85,17 +89,23 @@ jobs:
           <details><summary>Show Plan</summary>
 
           \`\`\`\n
-          ${process.env.PLAN}
+          ${process.env.PLAN || 'No plan output available'}
           \`\`\`
 
           </details>`;
 
-          github.rest.issues.createComment({
-            issue_number: context.issue.number,
-            owner: context.repo.owner,
-            repo: context.repo.name,
-            body: output
-          })
+          try {
+            await github.rest.issues.createComment({
+              owner: repo.owner,
+              repo: repo.repo,
+              issue_number: prNumber,
+              body: output
+            });
+          } catch (error) {
+            console.error('Error creating comment:', error);
+            console.error('Repository:', repo);
+            console.error('PR Number:', prNumber);
+          }
 
     - name: Terraform Apply
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'

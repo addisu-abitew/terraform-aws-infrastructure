@@ -8,6 +8,11 @@ on:
     branches:
       - main
 
+env:
+  TF_WORKSPACE: default
+  TF_INPUT: false
+  TF_IN_AUTOMATION: true
+
 jobs:
   terraform:
     name: 'Terraform'
@@ -26,15 +31,31 @@ jobs:
       uses: hashicorp/setup-terraform@v2
       with:
         terraform_version: 1.5.0
+        cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-west-2
+
+    - name: Setup Terraform Cache
+      uses: actions/cache@v3
+      with:
+        path: .terraform
+        key: ${{ runner.os }}-terraform-${{ hashFiles('**/.terraform.lock.hcl') }}
+        restore-keys: |
+          ${{ runner.os }}-terraform-
 
     - name: Terraform Format
       id: fmt
-      run: terraform fmt -check
+      run: terraform fmt -check -recursive
       continue-on-error: true
 
     - name: Terraform Init
       id: init
-      run: terraform init
+      run: terraform init -backend=false
 
     - name: Terraform Validate
       id: validate
@@ -43,7 +64,9 @@ jobs:
     - name: Terraform Plan
       id: plan
       if: github.event_name == 'pull_request'
-      run: terraform plan -no-color
+      run: |
+        terraform init
+        terraform plan -no-color -detailed-exitcode
       continue-on-error: true
 
     - name: Update Pull Request
@@ -76,4 +99,8 @@ jobs:
 
     - name: Terraform Apply
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-      run: terraform apply -auto-approve
+      run: |
+        terraform init
+        terraform apply -auto-approve
+      env:
+        TF_WORKSPACE: production

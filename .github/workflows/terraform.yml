@@ -8,11 +8,19 @@ on:
     branches:
       - main
 
+env:
+  TF_WORKSPACE: default
+  TF_INPUT: false
+  TF_IN_AUTOMATION: true
+
 jobs:
   terraform:
     name: 'Terraform'
     runs-on: ubuntu-latest
     environment: production
+    permissions:
+      contents: read
+      pull-requests: write
 
     defaults:
       run:
@@ -26,15 +34,31 @@ jobs:
       uses: hashicorp/setup-terraform@v2
       with:
         terraform_version: 1.5.0
+        cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-west-2
+
+    - name: Setup Terraform Cache
+      uses: actions/cache@v3
+      with:
+        path: .terraform
+        key: ${{ runner.os }}-terraform-${{ hashFiles('**/.terraform.lock.hcl') }}
+        restore-keys: |
+          ${{ runner.os }}-terraform-
 
     - name: Terraform Format
       id: fmt
-      run: terraform fmt -check
+      run: terraform fmt -check -recursive
       continue-on-error: true
 
     - name: Terraform Init
       id: init
-      run: terraform init
+      run: terraform init -backend=false
 
     - name: Terraform Validate
       id: validate
@@ -43,17 +67,20 @@ jobs:
     - name: Terraform Plan
       id: plan
       if: github.event_name == 'pull_request'
-      run: terraform plan -no-color
+      run: |
+        terraform init
+        terraform plan -no-color -detailed-exitcode
       continue-on-error: true
 
     - name: Update Pull Request
-      uses: actions/github-script@v6
       if: github.event_name == 'pull_request'
-      env:
-        PLAN: "terraform\n${{ steps.plan.outputs.stdout }}"
+      uses: actions/github-script@v6
       with:
         github-token: ${{ secrets.GITHUB_TOKEN }}
         script: |
+          const prNumber = context.issue.number;
+          const repo = context.repo;
+          
           const output = `#### Terraform Format and Style 🖌\`${{ steps.fmt.outcome }}\`
           #### Terraform Initialization ⚙️\`${{ steps.init.outcome }}\`
           #### Terraform Validation 🤖\`${{ steps.validate.outcome }}\`
@@ -62,18 +89,28 @@ jobs:
           <details><summary>Show Plan</summary>
 
           \`\`\`\n
-          ${process.env.PLAN}
+          ${process.env.PLAN || 'No plan output available'}
           \`\`\`
 
           </details>`;
 
-          github.rest.issues.createComment({
-            issue_number: context.issue.number,
-            owner: context.repo.owner,
-            repo: context.repo.name,
-            body: output
-          })
+          try {
+            await github.rest.issues.createComment({
+              owner: repo.owner,
+              repo: repo.repo,
+              issue_number: prNumber,
+              body: output
+            });
+          } catch (error) {
+            console.error('Error creating comment:', error);
+            console.error('Repository:', repo);
+            console.error('PR Number:', prNumber);
+          }
 
     - name: Terraform Apply
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-      run: terraform apply -auto-approve
+      run: |
+        terraform init
+        terraform apply -auto-approve
+      env:
+        TF_WORKSPACE: production
